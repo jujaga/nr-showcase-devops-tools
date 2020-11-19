@@ -121,7 +121,7 @@ objects:
                 - name: ENV_ID
                   value: ${ENV_ID}
                 - name: JENKINS_SERVICE_NAME
-                  value: jenkins
+                  value: jenkins-prod
                 - name: JENKINS_UC_INSECURE
                   value: "false"
                 - name: JENKINS_URL
