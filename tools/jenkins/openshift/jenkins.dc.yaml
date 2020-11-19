@@ -1,0 +1,297 @@
+---
+apiVersion: template.openshift.io/v1
+kind: Template
+labels:
+  app: jenkins-prod
+metadata:
+  name: jenkins
+objects:
+  - apiVersion: v1
+    kind: Secret
+    metadata:
+      annotations:
+        as-copy-of: template.${NAME}-github
+      name: ${NAME}${SUFFIX}-github
+    stringData:
+      metadata.name: ${NAME}${SUFFIX}-github
+      password: ${GH_PASSWORD}
+      username: ${GH_USERNAME}
+    type: kubernetes.io/basic-auth
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: ${NAME}${SUFFIX}
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 2Gi
+      storageClassName: netapp-file-standard
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      annotations:
+        serviceaccounts.openshift.io/oauth-redirectreference.jenkins: '{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"${NAME}${SUFFIX}"}}'
+      name: ${NAME}${SUFFIX}
+  - apiVersion: v1
+    kind: RoleBinding
+    metadata:
+      name: ${NAME}${SUFFIX}_edit
+    groupNames: null
+    roleRef:
+      name: edit
+    subjects:
+      - kind: ServiceAccount
+        name: ${NAME}${SUFFIX}
+  - apiVersion: v1
+    kind: RoleBinding
+    metadata:
+      name: ${NAME}${SUFFIX}_admin
+    groupNames: null
+    roleRef:
+      name: admin
+    subjects:
+      - kind: ServiceAccount
+        name: ${NAME}${SUFFIX}
+  - apiVersion: v1
+    kind: DeploymentConfig
+    metadata:
+      annotations:
+        template.alpha.openshift.io/wait-for-ready: "true"
+      name: ${NAME}${SUFFIX}
+    spec:
+      replicas: 1
+      revisionHistoryLimit: 10
+      selector:
+        app: jenkins-prod
+        deploymentconfig: ${NAME}${SUFFIX}
+      strategy:
+        type: Recreate
+        activeDeadlineSeconds: 21600
+        recreateParams:
+          timeoutSeconds: 600
+        resources: {}
+      template:
+        metadata:
+          labels:
+            app: jenkins-prod
+            deploymentconfig: ${NAME}${SUFFIX}
+        spec:
+          containers:
+            - image: " "
+              imagePullPolicy: IfNotPresent
+              # command:
+              #   - /usr/local/bin/container-entrypoint
+              #   - /usr/local/bin/jenkins-run
+              livenessProbe:
+                failureThreshold: 3
+                httpGet:
+                  path: /login
+                  port: 8080
+                initialDelaySeconds: 420
+                periodSeconds: 360
+                timeoutSeconds: 240
+              name: jenkins
+              ports:
+                - containerPort: 50000
+                  protocol: TCP
+                - containerPort: 8080
+                  protocol: TCP
+              readinessProbe:
+                httpGet:
+                  path: /login
+                  port: 8080
+                initialDelaySeconds: 3
+                timeoutSeconds: 240
+              resources:
+                limits:
+                  cpu: "${CPU_LIMIT}"
+                  memory: "${MEMORY_LIMIT}"
+                requests:
+                  cpu: "${CPU_REQUEST}"
+                  memory: "${MEMORY_REQUEST}"
+              env:
+                - name: DISABLE_ADMINISTRATIVE_MONITORS
+                  value: "false"
+                - name: ENABLE_FATAL_ERROR_LOG_FILE
+                  value: "false"
+                - name: ENV_NAME
+                  value: ${ENV_NAME}
+                - name: ENV_ID
+                  value: ${ENV_ID}
+                - name: JENKINS_SERVICE_NAME
+                  value: jenkins
+                - name: JENKINS_UC_INSECURE
+                  value: "false"
+                - name: JENKINS_URL
+                  value: https://${ROUTE_HOST}${ROUTE_PATH}
+                - name: JNLP_SERVICE_NAME
+                  value: jenkins-jnlp
+                - name: KUBERNETES_MASTER
+                  value: "https://kubernetes.default:443"
+                - name: KUBERNETES_TRUST_CERTIFICATES
+                  value: "true"
+                - name: OPENSHIFT_ENABLE_OAUTH
+                  value: "true"
+                - name: OPENSHIFT_ENABLE_REDIRECT_PROMPT
+                  value: "true"
+                - name: USE_JAVA_DIAGNOSTICS
+                  value: "true"
+              volumeMounts:
+                - name: jenkins-data
+                  mountPath: /var/lib/jenkins
+                - name: pod-metadata
+                  mountPath: /var/run/pod
+                - name: github
+                  mountPath: /run/secrets/github
+                  readOnly: true
+                - name: ns-config
+                  mountPath: /run/configs/ns
+                  readOnly: true
+                - name: jobs-config
+                  mountPath: /run/configs/jobs
+                  readOnly: true
+          restartPolicy: Always
+          serviceAccount: ${NAME}${SUFFIX}
+          serviceAccountName: ${NAME}${SUFFIX}
+          terminationGracePeriodSeconds: 30
+          volumes:
+            - name: jenkins-data
+              persistentVolumeClaim:
+                claimName: ${NAME}${SUFFIX}
+            - name: pod-metadata
+              downwardAPI:
+                items:
+                  - fieldRef:
+                      fieldPath: metadata.name
+                    name: name
+                    path: name
+                  - fieldRef:
+                      fieldPath: metadata.namespace
+                    name: namespace
+                    path: namespace
+                  - fieldRef:
+                      fieldPath: metadata.labels
+                    name: labels
+                    path: labels
+                  - fieldRef:
+                      fieldPath: metadata.annotations
+                    name: annotations
+                    path: annotations
+            - name: github
+              secret:
+                defaultMode: 420
+                secretName: ${NAME}${SUFFIX}-github
+            - name: ns-config
+              configMap:
+                defaultMode: 420
+                name: ns-config
+            - name: jobs-config
+              configMap:
+                defaultMode: 420
+                name: jobs-config
+      test: false
+      triggers:
+        - type: ConfigChange
+        - type: ImageChange
+          imageChangeParams:
+            automatic: true
+            containerNames:
+              - jenkins
+            from:
+              kind: ImageStreamTag
+              name: ${NAME}:${VERSION}
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: ${NAME}${SUFFIX}
+    spec:
+      ports:
+        - name: 8080-tcp
+          port: 8080
+          protocol: TCP
+          targetPort: 8080
+        - name: 50000-tcp
+          port: 50000
+          protocol: TCP
+          targetPort: 50000
+      selector:
+        deploymentconfig: ${NAME}${SUFFIX}
+      sessionAffinity: None
+      type: ClusterIP
+  - apiVersion: v1
+    kind: Route
+    metadata:
+      name: ${NAME}${SUFFIX}
+    spec:
+      host: ${ROUTE_HOST}
+      path: ${ROUTE_PATH}
+      port:
+        targetPort: 8080-tcp
+      tls:
+        termination: edge
+      to:
+        kind: Service
+        name: ${NAME}${SUFFIX}
+        weight: 100
+      wildcardPolicy: None
+parameters:
+  - name: NAME
+    description: A name used for all objects
+    displayName: Name
+    required: true
+  - name: SUFFIX
+    description: A name suffix used for all objects
+    displayName: Suffix
+    required: false
+    value: ""
+  - name: VERSION
+    description: A version used for the image tags
+    displayName: version
+    required: true
+    value: latest
+  - name: ROUTE_HOST
+    description: Route Hostname
+    displayName: Route Hostname
+    required: true
+  - name: ROUTE_PATH
+    description: Route Path
+    displayName: Route Path
+    required: true
+    value: /
+  - name: ENV_NAME
+    description: Environment Name
+    displayName: Environment Name
+    required: true
+    value: prod
+  - name: ENV_ID
+    description: Environment ID
+    displayName: Environment ID
+    required: true
+    value: prod
+  - description: GitHub Username (Same as github secret)
+    displayName: GH_USERNAME
+    name: GH_USERNAME
+    required: false
+    value: ""
+  - description: GitHub Personal Access Token (Same as github secret)
+    displayName: GH_PASSWORD
+    name: GH_PASSWORD
+    required: true
+  - name: CPU_REQUEST
+    description: Minimal CPU needed to run
+    displayName: CPU Request
+    value: 50m
+  - name: CPU_LIMIT
+    description: Maximum CPU allowed to use
+    displayName: CPU Limit
+    value: 2000m
+  - name: MEMORY_REQUEST
+    description: Minimal amount of memory needed to run
+    displayName: Memory Request
+    value: 512Mi
+  - name: MEMORY_LIMIT
+    description: Maximum amount of memory allowed to use
+    displayName: Memory Limit
+    value: 2Gi
